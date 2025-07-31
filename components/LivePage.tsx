@@ -52,6 +52,7 @@ export default function LivePage() {
             borderRadius: "0.4rem",
             border: "none",
             boxShadow: "0 2px 4px rgba(0,0,0,0.1)",
+            cursor: "pointer",
           }}
         >
           {Array.from({ length: TOTAL }, (_, i) => i + 1).map((n) => (

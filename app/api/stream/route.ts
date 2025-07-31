@@ -128,8 +128,28 @@ export async function GET(req: NextRequest) {
     const sp = new URL(req.url).searchParams;
     const cam = Math.min(CAMS - 1, Math.max(0, Number(sp.get("cam") || 0)));
     const qp = new URLSearchParams();
+
+    // 解像度の設定
     if (sp.get("res")) qp.set("resolution", sp.get("res")!);
-    if (sp.get("fps")) qp.set("fps", sp.get("fps")!);
+
+    // FPSの設定と検証
+    const requestedFps = sp.get("fps");
+    if (requestedFps) {
+      const fps = Number(requestedFps);
+      // FPSの有効性をチェック（1-30の範囲）
+      if (isNaN(fps) || fps < 1 || fps > 30) {
+        return new Response(
+          JSON.stringify({
+            error: "Invalid FPS value. Must be between 1 and 30.",
+          }),
+          { status: 400, headers: { "Content-Type": "application/json" } }
+        );
+      }
+      qp.set("fps", fps.toString());
+    } else {
+      // デフォルトFPSを設定（5fps）
+      qp.set("fps", "5");
+    }
 
     const { url, agent } = await endpoint(cam, qp);
     return await proxy(url, cam, agent);
