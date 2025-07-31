@@ -1,0 +1,77 @@
+# /layout.tsx
+import type { ReactNode } from "react";
+
+export default function RootLayout({ children }: { children: ReactNode }) {
+  return (
+    <html lang="ja" suppressHydrationWarning={true}>
+      <body
+        style={{
+          margin: 0,
+          fontFamily:
+            "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Noto Sans JP', sans-serif",
+        }}
+      >
+        {children}
+      </body>
+    </html>
+  );
+}
+
+
+# /page.tsx
+import LivePage from "@/components/LivePage";
+
+export default function Page() {
+  return <LivePage />;
+}
+
+# /components/LivePage.tsx
+"use client";
+
+import dynamic from "next/dynamic";
+
+// ssr:false が必要なのでクライアント側で dynamic import
+const VideoStream = dynamic(() => import("@/components/VideoStream"), {
+  ssr: false,
+});
+
+export default function LivePage() {
+  return (
+    <main style={{ maxWidth: 960, margin: "2rem auto" }}>
+      <h1>Axis Secure Remote Access v2 Demo</h1>
+      <VideoStream />
+    </main>
+  );
+}
+
+# /components/VideoStream.tsx
+"use client";
+
+import { useEffect, useState } from "react";
+
+/**
+ * Very small wrapper around the <img> tag.
+ * MJPEG is essentially an endless multipart JPEG stream,
+ * so an <img> with the stream URL works in every browser.
+ */
+export default function VideoStream() {
+  const [url, setUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    // Bust caching on reloads
+    setUrl(`/api/stream?ts=${Date.now()}`);
+  }, []);
+
+  if (!url) return <p>Loading…</p>;
+
+  return (
+    // Tailwind / CSS modules etc. would go here in a real project
+    <img
+      src={url}
+      style={{ width: "100%", height: "auto", background: "#000" }}
+      alt="Axis live view"
+    />
+  );
+}
+
+
