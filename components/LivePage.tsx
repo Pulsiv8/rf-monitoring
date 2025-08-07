@@ -38,6 +38,7 @@ export default function LivePage() {
           justifyContent: "center",
           alignItems: "center",
           gap: "0.4rem",
+          flexWrap: "wrap",
         }}
       >
         <h1 style={{ fontSize: "2rem" }}>Farm Monitoring System</h1>

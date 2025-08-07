@@ -1,5 +1,5 @@
 import type { NextRequest } from "next/server";
-import { counters } from "../stream/route"; // 相対パスはビルド環境に合わせ調整
+import { counters } from "../stream/route";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -11,24 +11,21 @@ export async function GET(req: NextRequest) {
     new ReadableStream({
       start(controller) {
         let prev = counters[cam];
-        const timer = setInterval(() => {
+        const t = setInterval(() => {
           const now = counters[cam];
-          const bps = ((now - prev) * 8) / 5; // bits/sec (5s窓)
+          const kbps = ((now - prev) * 8) / 5000;
           prev = now;
-          controller.enqueue(
-            `data: ${JSON.stringify({ kbps: bps / 1000 })}\n\n`
-          );
-        }, 5_000);
-
-        controller.enqueue(": ready\n\n"); // comment 行で接続確立
-        req.signal.addEventListener("abort", () => clearInterval(timer));
+          controller.enqueue(`data: ${JSON.stringify({ kbps })}\n\n`);
+        }, 5000);
+        controller.enqueue(": ready\n\n");
+        req.signal.addEventListener("abort", () => clearInterval(t));
       },
     }),
     {
       headers: {
         "Content-Type": "text/event-stream",
-        "Cache-Control": "no-cache",
         Connection: "keep-alive",
+        "Cache-Control": "no-cache",
       },
     }
   );

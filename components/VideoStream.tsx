@@ -1,44 +1,87 @@
 "use client";
-import { useState, useEffect, useMemo } from "react";
+import { useEffect, useRef, useState } from "react";
+import mpegts from "mpegts.js";
 
 type Props = { camIdx: number; showNum: number };
 
 const RES_MAP = {
-  VGA: { label: "VGA", size: "640x480" },
-  HD: { label: "HD", size: "1280x720" },
-  FHD: { label: "FHD", size: "1920x1080" },
+  VGA: { label: "640×480", size: "640x480" },
+  HD: { label: "1280×720", size: "1280x720" },
+  FHD: { label: "1920×1080", size: "1920x1080" },
+  "4K": { label: "3840×2160", size: "3840x2160" },
 } as const;
 
 export default function VideoStream({ camIdx, showNum }: Props) {
+  /* UI state */
   const [resKey, setResKey] = useState<keyof typeof RES_MAP>("HD");
-  const [fps, setFps] = useState(5);
-  const [cb, setCb] = useState(Date.now());
-  const [kbps, setKbps] = useState<number | null>(null);
-  const [iperf, setIperf] = useState<string | null>(null);
+  const [fps, setFps] = useState(30);
+  const [reloadKey, setReloadKey] = useState(Date.now());
   const [isLoading, setIsLoading] = useState(false);
-  const [imgRef, setImgRef] = useState<HTMLImageElement | null>(null);
+  const [kbps, setKbps] = useState<number | null>(null);
+  const [lastError, setLastError] = useState<string | null>(null);
 
-  const src = `/api/stream?cam=${camIdx}&res=${RES_MAP[resKey].size}&fps=${fps}&cb=${cb}`;
+  /* refs */
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const playerRef = useRef<mpegts.Player | null>(null);
 
-  /* reload on param change */
-  useEffect(() => setCb(Date.now()), [resKey, fps, camIdx]);
+  /* build stream URL */
+  const url = `/api/stream?cam=${camIdx}&res=${RES_MAP[resKey].size}&fps=${fps}&cb=${reloadKey}`;
 
-  /* 強制更新関数 */
-  const forceReload = () => {
-    setIsLoading(true);
-    const newCb = Date.now();
-    setCb(newCb);
+  /* initialise mpegts.js */
+  useEffect(() => {
+    if (!videoRef.current || !mpegts.getFeatureList().mseLivePlayback) return;
 
-    // 画像要素を強制的に再読み込み
-    if (imgRef) {
-      imgRef.src = `/api/stream?cam=${camIdx}&res=${RES_MAP[resKey].size}&fps=${fps}&cb=${newCb}`;
+    const player = mpegts.createPlayer(
+      { type: "mpegts", isLive: true, url },
+      {
+        enableStashBuffer: false,
+        stashInitialSize: 128,
+        liveBufferLatencyChasing: true, // 自動追い越し
+        liveBufferLatencyMaxLatency: 1.0, // 1 s を超えたら skip
+        // liveBufferLatencyMinLatency: 0.3,
+      }
+    );
+
+    player.attachMediaElement(videoRef.current);
+    player.load();
+
+    // play()のPromiseを適切に処理
+    const playPromise = player.play();
+    if (playPromise !== undefined) {
+      playPromise.catch((error: Error) => {
+        console.warn(`カメラ ${camIdx} 再生エラー:`, error);
+        // AbortErrorは無視（新しいload requestによる中断）
+        if (error.name !== "AbortError") {
+          setLastError(`再生エラー: ${error.message}`);
+        }
+      });
     }
 
-    // ローディング状態をリセット
-    setTimeout(() => setIsLoading(false), 1000);
-  };
+    playerRef.current = player;
+    setIsLoading(false);
+    setLastError(null);
 
-  /* ── SSE for kbps ────────────────────── */
+    // エラーハンドリング
+    player.on(mpegts.Events.ERROR, (errorType, errorDetail) => {
+      console.error(
+        `カメラ ${camIdx} ストリームエラー:`,
+        errorType,
+        errorDetail
+      );
+      setLastError(`${errorType}: ${errorDetail}`);
+      setIsLoading(true);
+    });
+
+    return () => {
+      try {
+        player.destroy();
+      } catch (error) {
+        console.warn(`カメラ ${camIdx} プレイヤー破棄エラー:`, error);
+      }
+    };
+  }, [url, camIdx]);
+
+  /* SSE metrics */
   useEffect(() => {
     const es = new EventSource(`/api/metrics?cam=${camIdx}`);
     es.onmessage = (e) => {
@@ -48,22 +91,11 @@ export default function VideoStream({ camIdx, showNum }: Props) {
     return () => es.close();
   }, [camIdx]);
 
-  /* ── iPerf launcher ─────────────────── */
-  const runIperf = async () => {
-    setIperf("測定中…");
-    try {
-      const r = await fetch(`/api/iperf?cam=${camIdx}`);
-      const j = await r.json();
-      if (j.end?.sum_sent?.bits_per_second) {
-        const mbps = (j.end.sum_sent.bits_per_second / 1_000_000).toFixed(2);
-        setIperf(`iPerf ≈ ${mbps} Mbps`);
-      } else {
-        setIperf("iPerf エラー");
-      }
-    } catch {
-      setIperf("iPerf 実行失敗");
-    }
-    setTimeout(() => setIperf(null), 10_000);
+  /* force reload handler */
+  const forceReload = () => {
+    setIsLoading(true);
+    setReloadKey(Date.now());
+    setLastError(null);
   };
 
   return (
@@ -73,19 +105,16 @@ export default function VideoStream({ camIdx, showNum }: Props) {
         flexDirection: "column",
         gap: "1rem",
         padding: "1rem",
-        backgroundColor: "#f8f9fa",
+        background: "#f8f9fa",
         borderRadius: "12px",
         border: "1px solid #e9ecef",
         boxShadow: "0 2px 8px rgba(0,0,0,0.1)",
         width: showNum === 1 ? "80%" : "100%",
         minWidth: "300px",
-        ...(showNum === 1 && {
-          maxWidth: "1200px",
-          margin: "0 auto",
-        }),
+        ...(showNum === 1 && { maxWidth: "1200px", margin: "0 auto" }),
       }}
     >
-      {/* stream box */}
+      {/* video box */}
       <div
         style={{
           width: "100%",
@@ -93,24 +122,36 @@ export default function VideoStream({ camIdx, showNum }: Props) {
           background: "#000",
           borderRadius: "12px",
           overflow: "hidden",
-          boxShadow: "0 4px 12px rgba(0,0,0,0.15)",
           position: "relative",
+          boxShadow: "0 4px 12px rgba(0,0,0,0.15)",
         }}
       >
-        <img
-          id={`cam${camIdx}`}
-          ref={setImgRef}
-          src={src}
+        <video
+          ref={videoRef}
+          muted
+          playsInline
           style={{
             width: "100%",
             height: "100%",
             objectFit: "contain",
             opacity: isLoading ? 0.7 : 1,
-            transition: "opacity 0.3s ease",
+            transition: "opacity .3s",
           }}
-          alt={`cam${camIdx}`}
-          onLoad={() => setIsLoading(false)}
-          onError={() => setIsLoading(false)}
+          onWaiting={() => {
+            setIsLoading(true);
+            /* 2 s 以上止まったら追い越す */
+            setTimeout(() => {
+              const p = playerRef.current;
+              if (
+                p &&
+                p.buffered.length > 0 &&
+                p.currentTime - p.buffered.end(0) > 1
+              ) {
+                p.currentTime = p.buffered.end(0) - 0.1;
+              }
+            }, 2000);
+          }}
+          onPlaying={() => setIsLoading(false)}
         />
         {isLoading && (
           <div
@@ -118,14 +159,13 @@ export default function VideoStream({ camIdx, showNum }: Props) {
               position: "absolute",
               top: "50%",
               left: "50%",
-              transform: "translate(-50%, -50%)",
-              color: "white",
+              transform: "translate(-50%,-50%)",
+              color: "#fff",
               fontSize: "18px",
-              fontWeight: "500",
-              zIndex: 1,
+              fontWeight: 500,
             }}
           >
-            更新中...
+            更新中…
           </div>
         )}
       </div>
@@ -140,126 +180,50 @@ export default function VideoStream({ camIdx, showNum }: Props) {
           alignItems: "center",
         }}
       >
+        {/* resolution */}
         <select
           value={resKey}
           onChange={(e) => setResKey(e.target.value as keyof typeof RES_MAP)}
-          style={{
-            fontSize: "20px",
-            padding: "8px 12px",
-            borderRadius: "8px",
-            border: "2px solid #dee2e6",
-            backgroundColor: "white",
-            cursor: "pointer",
-            outline: "none",
-            transition: "border-color 0.2s ease",
-          }}
-          onFocus={(e) => (e.target.style.borderColor = "#007bff")}
-          onBlur={(e) => (e.target.style.borderColor = "#dee2e6")}
+          style={selectStyle}
+          onFocus={focusBlue}
+          onBlur={blurGray}
         >
           {Object.keys(RES_MAP).map((k) => (
             <option key={k}>{k}</option>
           ))}
         </select>
 
+        {/* fps */}
         <input
           type="number"
           min={1}
           max={30}
           value={fps}
           onChange={(e) => setFps(Number(e.target.value))}
-          style={{
-            width: "70px",
-            fontSize: "20px",
-            padding: "8px 12px",
-            borderRadius: "8px",
-            border: "2px solid #dee2e6",
-            backgroundColor: "white",
-            outline: "none",
-            transition: "border-color 0.2s ease",
-          }}
-          onFocus={(e) => (e.target.style.borderColor = "#007bff")}
-          onBlur={(e) => (e.target.style.borderColor = "#dee2e6")}
+          style={{ ...selectStyle, width: "70px" }}
+          onFocus={focusBlue}
+          onBlur={blurGray}
         />
 
+        {/* reload */}
         <button
           onClick={forceReload}
           disabled={isLoading}
-          style={{
-            fontSize: "20px",
-            padding: "8px 12px",
-            borderRadius: "8px",
-            border: "2px solid #007bff",
-            backgroundColor: isLoading ? "#6c757d" : "#007bff",
-            color: "white",
-            cursor: isLoading ? "not-allowed" : "pointer",
-            transition: "all 0.2s ease",
-            minWidth: "44px",
-            opacity: isLoading ? 0.6 : 1,
-          }}
-          onMouseEnter={(e) => {
-            if (!isLoading) {
-              e.currentTarget.style.backgroundColor = "#0056b3";
-              e.currentTarget.style.borderColor = "#0056b3";
-            }
-          }}
-          onMouseLeave={(e) => {
-            if (!isLoading) {
-              e.currentTarget.style.backgroundColor = "#007bff";
-              e.currentTarget.style.borderColor = "#007bff";
-            }
-          }}
+          style={btnStyle(isLoading ? "#6c757d" : "#007bff", "#007bff")}
+          onMouseEnter={(e) => !isLoading && hoverBtn(e, "#0056b3")}
+          onMouseLeave={(e) => !isLoading && hoverBtn(e, "#007bff")}
         >
           {isLoading ? "⏳" : "🔄"}
         </button>
+
+        {/* fullscreen */}
         <button
-          onClick={() =>
-            document.getElementById(`cam${camIdx}`)!.requestFullscreen?.()
-          }
-          style={{
-            fontSize: "20px",
-            padding: "8px 12px",
-            borderRadius: "8px",
-            border: "2px solid #28a745",
-            backgroundColor: "#28a745",
-            color: "white",
-            cursor: "pointer",
-            transition: "all 0.2s ease",
-            minWidth: "44px",
-          }}
-          onMouseEnter={(e) => {
-            e.currentTarget.style.backgroundColor = "#1e7e34";
-            e.currentTarget.style.borderColor = "#1e7e34";
-          }}
-          onMouseLeave={(e) => {
-            e.currentTarget.style.backgroundColor = "#28a745";
-            e.currentTarget.style.borderColor = "#28a745";
-          }}
+          onClick={() => videoRef.current?.requestFullscreen?.()}
+          style={btnStyle("#28a745", "#28a745")}
+          onMouseEnter={(e) => hoverBtn(e, "#1e7e34")}
+          onMouseLeave={(e) => hoverBtn(e, "#28a745")}
         >
           ⛶
-        </button>
-        <button
-          onClick={runIperf}
-          style={{
-            fontSize: "20px",
-            padding: "8px 16px",
-            borderRadius: "8px",
-            border: "2px solid #ffc107",
-            backgroundColor: "#ffc107",
-            color: "#212529",
-            cursor: "pointer",
-            transition: "all 0.2s ease",
-            fontWeight: "500",
-          }}
-          onMouseEnter={(e) => {
-            e.currentTarget.style.backgroundColor = "#e0a800";
-            e.currentTarget.style.borderColor = "#e0a800";
-          }}
-          onMouseLeave={(e) => {
-            e.currentTarget.style.backgroundColor = "#ffc107";
-            e.currentTarget.style.borderColor = "#ffc107";
-          }}
-        >
-          ⚡ iPerf
         </button>
       </div>
 
@@ -269,15 +233,61 @@ export default function VideoStream({ camIdx, showNum }: Props) {
           fontSize: "24px",
           color: "#495057",
           padding: "12px 16px",
-          backgroundColor: "white",
+          background: "#fff",
           borderRadius: "8px",
           border: "1px solid #e9ecef",
-          fontWeight: "500",
+          fontWeight: 500,
         }}
       >
         {kbps !== null ? `実測: ${kbps.toFixed(1)} kbps` : "―"}{" "}
-        {iperf && `| ${iperf}`}
+        {lastError && (
+          <div style={{ fontSize: "14px", color: "#dc3545", marginTop: "4px" }}>
+            エラー: {lastError}
+          </div>
+        )}
       </div>
     </div>
   );
 }
+
+/* ── inline style helpers ─ */
+const selectStyle: React.CSSProperties = {
+  fontSize: "20px",
+  padding: "8px 12px",
+  borderRadius: "8px",
+  border: "2px solid #dee2e6",
+  background: "#fff",
+  cursor: "pointer",
+  outline: "none",
+  transition: "border-color .2s",
+};
+const focusBlue = (e: React.FocusEvent<HTMLElement>) =>
+  (e.currentTarget.style.borderColor = "#007bff");
+const blurGray = (e: React.FocusEvent<HTMLElement>) =>
+  (e.currentTarget.style.borderColor = "#dee2e6");
+
+const btnStyle = (
+  bg: string,
+  border: string,
+  color = "#fff"
+): React.CSSProperties => ({
+  fontSize: "20px",
+  padding: "8px 12px",
+  borderRadius: "8px",
+  border: `2px solid ${border}`,
+  background: bg,
+  color,
+  cursor: "pointer",
+  transition: "all .2s",
+  minWidth: "44px",
+});
+
+const hoverBtn = (
+  e: React.MouseEvent<HTMLElement>,
+  bg: string,
+  color = "#fff"
+) => {
+  e.currentTarget.style.backgroundColor = bg;
+  e.currentTarget.style.borderColor = bg;
+  e.currentTarget.style.color = color;
+};
