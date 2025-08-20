@@ -165,6 +165,7 @@ export default function VideoStream({ camIdx, showNum, mode }: Props) {
             objectFit: "contain",
             opacity: isLoading ? 0.7 : 1,
             transition: "opacity .3s",
+            transform: "rotate(180deg)",
           }}
           onWaiting={() => {
             setIsLoading(true);
