@@ -1,27 +1,119 @@
-import { spawn } from "child_process";
+import { spawn, execSync } from "child_process";
 import { Readable } from "stream";
 import type { NextRequest } from "next/server";
 
 /* ── Env ─────────────────────────── */
-const USER = process.env.CAMERA_USERNAME!;
-const PASS = process.env.CAMERA_PASSWORD!;
-const HOSTS = process.env.CAMERA_RTSP_HOSTS!.split(",").map((s) => s.trim());
-const PORTS = process.env.CAMERA_RTSP_PORTS!.split(",").map((s) => s.trim());
-const PROFILES = process.env
-  .CAMERA_STREAM_PROFILES!.split(",")
-  .map((s) => s.trim());
-const CAMS = HOSTS.length;
+const USER = process.env.CAMERA_USERNAME;
+const PASS = process.env.CAMERA_PASSWORD;
+
+// 環境変数の検証
+if (!USER || !PASS) {
+  console.error("環境変数が設定されていません:");
+  console.error("CAMERA_USERNAME:", USER ? "設定済み" : "未設定");
+  console.error("CAMERA_PASSWORD:", PASS ? "設定済み" : "未設定");
+}
+
+// デフォルトモード（環境変数から取得、UIで上書き可能）
+const DEFAULT_MODE = process.env.CAMERA_MODE || "GLOBAL";
+
+// モードに応じてホストとポートを選択する関数
+function getHostsAndPorts(mode: string) {
+  let hosts: string[] = [];
+  let ports: string[] = [];
+
+  try {
+    if (mode === "LOCAL") {
+      const hostsLocal = process.env.CAMERA_RTSP_HOSTS_LOCAL;
+      const portsLocal = process.env.CAMERA_RTSP_PORTS_LOCAL;
+
+      if (!hostsLocal || !portsLocal) {
+        throw new Error(
+          `LOCALモード用の環境変数が設定されていません: CAMERA_RTSP_HOSTS_LOCAL=${hostsLocal}, CAMERA_RTSP_PORTS_LOCAL=${portsLocal}`
+        );
+      }
+
+      hosts = hostsLocal.split(",").map((s) => s.trim());
+      ports = portsLocal.split(",").map((s) => s.trim());
+    } else {
+      const hostsGlobal = process.env.CAMERA_RTSP_HOSTS_GLOBAL;
+      const portsGlobal = process.env.CAMERA_RTSP_PORTS_GLOBAL;
+
+      if (!hostsGlobal || !portsGlobal) {
+        throw new Error(
+          `GLOBALモード用の環境変数が設定されていません: CAMERA_RTSP_HOSTS_GLOBAL=${hostsGlobal}, CAMERA_RTSP_PORTS_GLOBAL=${portsGlobal}`
+        );
+      }
+
+      hosts = hostsGlobal.split(",").map((s) => s.trim());
+      ports = portsGlobal.split(",").map((s) => s.trim());
+    }
+  } catch (error) {
+    console.error("環境変数の設定エラー:", error);
+  }
+
+  return { hosts, ports };
+}
+
+const PROFILES = process.env.CAMERA_STREAM_PROFILES?.split(",").map((s) =>
+  s.trim()
+) || ["quality"];
+
+console.log("環境変数の設定状況:");
+console.log("DEFAULT_MODE:", DEFAULT_MODE);
+console.log("PROFILES:", PROFILES);
 
 /* ── 帯域計測用カウンタ ───────────── */
-export const counters = new Uint32Array(CAMS); // bytes ⬆︎
+// 最大カメラ数を動的に計算（両モードの最大値を使用）
+const maxLocalCams =
+  process.env.CAMERA_RTSP_HOSTS_LOCAL?.split(",").length || 0;
+const maxGlobalCams =
+  process.env.CAMERA_RTSP_HOSTS_GLOBAL?.split(",").length || 0;
+const MAX_CAMS = Math.max(maxLocalCams, maxGlobalCams);
+
+export const counters = new Uint32Array(MAX_CAMS); // bytes ⬆︎
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET(req: NextRequest) {
   try {
+    // 環境変数の検証
+    if (!USER || !PASS) {
+      return new Response(
+        JSON.stringify({
+          error: "環境変数が設定されていません",
+          details: { USER: !!USER, PASS: !!PASS },
+        }),
+        { status: 500, headers: { "Content-Type": "application/json" } }
+      );
+    }
+
     const sp = new URL(req.url).searchParams;
-    const cam = Math.min(CAMS - 1, Math.max(0, Number(sp.get("cam") || 0)));
+    const mode = sp.get("mode") || DEFAULT_MODE; // UIからモードを受け取る
+    const cam = Math.min(MAX_CAMS - 1, Math.max(0, Number(sp.get("cam") || 0)));
+
+    // モードに応じてホストとポートを取得
+    const { hosts, ports } = getHostsAndPorts(mode);
+
+    if (hosts.length === 0 || ports.length === 0) {
+      return new Response(
+        JSON.stringify({
+          error: "カメラの設定が正しくありません",
+          details: { mode, hosts, ports },
+        }),
+        { status: 500, headers: { "Content-Type": "application/json" } }
+      );
+    }
+
+    if (cam >= hosts.length) {
+      return new Response(
+        JSON.stringify({
+          error: "カメラインデックスが範囲外です",
+          details: { cam, maxIndex: hosts.length - 1, mode },
+        }),
+        { status: 400, headers: { "Content-Type": "application/json" } }
+      );
+    }
 
     /* 可変パラメータ (resolution / fps) */
     const qp = new URLSearchParams({ protocol: "tcp" });
@@ -29,8 +121,23 @@ export async function GET(req: NextRequest) {
     if (sp.get("fps")) qp.set("fps", sp.get("fps")!);
 
     const rtsp =
-      `rtsp://${USER}:${PASS}@${HOSTS[cam]}:${PORTS[cam]}/axis-media/media.amp` +
-      `?streamprofile=${PROFILES[cam]}&${qp.toString()}`;
+      `rtsp://${USER}:${PASS}@${hosts[cam]}:${ports[cam]}/axis-media/media.amp` +
+      `?streamprofile=${PROFILES[cam % PROFILES.length]}&${qp.toString()}`;
+
+    console.log(`[${mode} Mode] Camera ${cam}: ${rtsp}`);
+
+    // FFmpegの存在確認
+    try {
+      execSync("ffmpeg -version", { stdio: "ignore" });
+    } catch (error) {
+      return new Response(
+        JSON.stringify({
+          error: "FFmpegがインストールされていません",
+          details: "FFmpegのインストールが必要です",
+        }),
+        { status: 500, headers: { "Content-Type": "application/json" } }
+      );
+    }
 
     const ff = spawn(
       "ffmpeg",
@@ -62,8 +169,19 @@ export async function GET(req: NextRequest) {
         "resend_headers+initial_discontinuity",
         "pipe:1",
       ],
-      { stdio: ["ignore", "pipe", "inherit"] }
+      { stdio: ["ignore", "pipe", "pipe"] }
     );
+
+    // FFmpegのエラーハンドリング
+    if (ff.stderr) {
+      ff.stderr.on("data", (data: Buffer) => {
+        console.error(`FFmpeg Error (Camera ${cam}):`, data.toString());
+      });
+    }
+
+    ff.on("error", (error: Error) => {
+      console.error(`FFmpeg Spawn Error (Camera ${cam}):`, error);
+    });
 
     const rstream = Readable.from(ff.stdout);
     const body = new ReadableStream({
@@ -73,6 +191,10 @@ export async function GET(req: NextRequest) {
           controller.enqueue(chunk);
         });
         rstream.on("end", () => controller.close());
+        rstream.on("error", (error: Error) => {
+          console.error(`Stream Error (Camera ${cam}):`, error);
+          controller.error(error);
+        });
       },
       cancel() {
         ff.kill("SIGKILL");
@@ -87,8 +209,12 @@ export async function GET(req: NextRequest) {
       },
     });
   } catch (e) {
+    console.error("Stream API Error:", e);
     return new Response(
-      JSON.stringify({ error: e instanceof Error ? e.message : String(e) }),
+      JSON.stringify({
+        error: e instanceof Error ? e.message : String(e),
+        stack: e instanceof Error ? e.stack : undefined,
+      }),
       { status: 502, headers: { "Content-Type": "application/json" } }
     );
   }

@@ -1,79 +1,69 @@
-# Axis Camera Monitor
+# RF Monitoring System
 
-Axis カメラのライブストリーミングを表示する Next.js アプリケーションです。
+カメラからのライブストリーミングを表示するシステムです。
 
-## 機能
+## 環境変数の設定
 
-- グローバル IP アドレス経由での Axis カメラアクセス
-- 現在のネットワークとカメラのネットワークを自動判定
-- VAPIX API を使用したライブストリーミング
-- フルスクリーン表示対応
-- リアルタイム映像更新
+`.env.local`ファイルを作成し、以下の設定を行ってください：
 
-## セットアップ
-
-### 1. 依存関係のインストール
+### 基本設定
 
 ```bash
-npm install
+# カメラの認証情報
+CAMERA_USERNAME=your_camera_username
+CAMERA_PASSWORD=your_camera_password
+
+# ストリームプロファイル（カンマ区切りで複数指定可能）
+CAMERA_STREAM_PROFILES=quality,quality
+
+# 表示するカメラ数
+NEXT_PUBLIC_CAMERA_COUNT=2
 ```
 
-### 2. 環境変数の設定
-
-`.env.local` ファイルを作成し、以下の環境変数を設定してください：
+### モード設定
 
 ```bash
-# カメラのグローバルIPアドレス
-NEXT_PUBLIC_CAMERA_GLOBAL_IP=153.134.16.130
-
-# カメラのローカルIPアドレス
-NEXT_PUBLIC_CAMERA_LOCAL_IP=192.168.11.43
-
-# カメラ認証情報
-CAMERA_USERNAME=root
-CAMERA_PASSWORD=SOUMU-RF-1
+# カメラモード（GLOBAL または LOCAL）
+CAMERA_MODE=GLOBAL
 ```
 
-詳細な設定方法は `ENV_EXAMPLE.md` を参照してください。
-
-### 3. 開発サーバーの起動
+### GLOBAL モード（外部ネットワーク）
 
 ```bash
-npm run dev
+# 外部ネットワーク上のカメラIPアドレス（カンマ区切り）
+CAMERA_RTSP_HOSTS_GLOBAL=203.0.113.100,203.0.113.101
+
+# RTSPポート（カンマ区切り、通常は554）
+CAMERA_RTSP_PORTS_GLOBAL=554,554
 ```
 
-ブラウザで [http://localhost:3000](http://localhost:3000) を開いてアプリケーションを確認してください。
+### LOCAL モード（ローカルネットワーク）
 
-## 動作仕様
+```bash
+# ローカルネットワーク上のカメラIPアドレス（カンマ区切り）
+CAMERA_RTSP_HOSTS_LOCAL=192.168.1.100,192.168.1.101
 
-1. **現在のネットワークのグローバル IP アドレスを取得**
+# RTSPポート（カンマ区切り、通常は554）
+CAMERA_RTSP_PORTS_LOCAL=554,554
+```
 
-   - 外部 API を使用して現在のネットワークのグローバル IP アドレスを取得
+## 使用方法
 
-2. **接続方法の決定**
+1. 環境変数を設定
+2. アプリケーションを起動
+3. ブラウザでアクセス
+4. モードに応じたカメラから映像を表示
 
-   - 現在のグローバル IP アドレス = カメラのグローバル IP アドレスの場合
-     → カメラのローカル IP アドレスに直接アクセス
-   - 現在のグローバル IP アドレス ≠ カメラのグローバル IP アドレスの場合
-     → カメラのグローバル IP アドレスを経由してローカル IP アドレスにアクセス
+## モード切り替え
 
-3. **VAPIX API による映像取得**
-   - `/axis-cgi/mjpg/video.cgi` を使用してライブストリーミングを取得
-   - Basic 認証を使用
+`CAMERA_MODE`環境変数を変更することで、GLOBAL モードと LOCAL モードを切り替えることができます：
 
-## 技術スタック
+- `CAMERA_MODE=GLOBAL` → 外部ネットワークのカメラを使用
+- `CAMERA_MODE=LOCAL` → ローカルネットワークのカメラを使用
 
-- [Next.js](https://nextjs.org/) - React フレームワーク
-- TypeScript - 型安全な開発
-- VAPIX API - Axis カメラ制御
+## 注意事項
 
-## トラブルシューティング
-
-接続に問題がある場合は、以下を確認してください：
-
-- カメラの IP アドレスが正しく設定されているか
-- ファイアウォールの設定
-- カメラの認証情報
-- VAPIX API が有効になっているか
-
-詳細は `ENV_EXAMPLE.md` のトラブルシューティングセクションを参照してください。
+- FFmpeg がサーバーにインストールされている必要があります
+- カメラが RTSP プロトコルをサポートしている必要があります
+- ファイアウォールで RTSP ポート（通常 554）が開放されている必要があります
+- カメラの認証情報が正しく設定されている必要があります

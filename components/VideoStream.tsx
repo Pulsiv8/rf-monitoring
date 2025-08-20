@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState } from "react";
 import mpegts from "mpegts.js";
 
-type Props = { camIdx: number; showNum: number };
+type Props = { camIdx: number; showNum: number; mode: string };
 
 const RES_MAP = {
   VGA: { label: "640×480", size: "640x480" },
@@ -11,10 +11,10 @@ const RES_MAP = {
   "4K": { label: "3840×2160", size: "3840x2160" },
 } as const;
 
-export default function VideoStream({ camIdx, showNum }: Props) {
+export default function VideoStream({ camIdx, showNum, mode }: Props) {
   /* UI state */
   const [resKey, setResKey] = useState<keyof typeof RES_MAP>("HD");
-  const [fps, setFps] = useState(30);
+  const [fps, setFps] = useState(5);
   const [reloadKey, setReloadKey] = useState(Date.now());
   const [isLoading, setIsLoading] = useState(false);
   const [kbps, setKbps] = useState<number | null>(null);
@@ -25,7 +25,7 @@ export default function VideoStream({ camIdx, showNum }: Props) {
   const playerRef = useRef<mpegts.Player | null>(null);
 
   /* build stream URL */
-  const url = `/api/stream?cam=${camIdx}&res=${RES_MAP[resKey].size}&fps=${fps}&cb=${reloadKey}`;
+  const url = `/api/stream?cam=${camIdx}&res=${RES_MAP[resKey].size}&fps=${fps}&mode=${mode}&cb=${reloadKey}`;
 
   /* initialise mpegts.js */
   useEffect(() => {
@@ -45,6 +45,13 @@ export default function VideoStream({ camIdx, showNum }: Props) {
     player.attachMediaElement(videoRef.current);
     player.load();
 
+    // プレイヤーが準備完了してからrefを設定
+    player.on(mpegts.Events.MEDIA_INFO, () => {
+      playerRef.current = player;
+      setIsLoading(false);
+      setLastError(null);
+    });
+
     // play()のPromiseを適切に処理
     const playPromise = player.play();
     if (playPromise !== undefined) {
@@ -56,10 +63,6 @@ export default function VideoStream({ camIdx, showNum }: Props) {
         }
       });
     }
-
-    playerRef.current = player;
-    setIsLoading(false);
-    setLastError(null);
 
     // エラーハンドリング
     player.on(mpegts.Events.ERROR, (errorType, errorDetail) => {
@@ -85,8 +88,19 @@ export default function VideoStream({ camIdx, showNum }: Props) {
   useEffect(() => {
     const es = new EventSource(`/api/metrics?cam=${camIdx}`);
     es.onmessage = (e) => {
-      const { kbps } = JSON.parse(e.data);
-      setKbps(kbps);
+      try {
+        const data = JSON.parse(e.data);
+        if (data.error) {
+          console.error(`カメラ ${camIdx} メトリクスエラー:`, data.error);
+        } else {
+          setKbps(data.kbps);
+        }
+      } catch (error) {
+        console.error(`カメラ ${camIdx} メトリクス解析エラー:`, error);
+      }
+    };
+    es.onerror = (error) => {
+      console.error(`カメラ ${camIdx} メトリクス接続エラー:`, error);
     };
     return () => es.close();
   }, [camIdx]);
@@ -96,6 +110,21 @@ export default function VideoStream({ camIdx, showNum }: Props) {
     setIsLoading(true);
     setReloadKey(Date.now());
     setLastError(null);
+  };
+
+  /* debug handler */
+  const showDebugInfo = async () => {
+    try {
+      const response = await fetch("/api/debug");
+      const data = await response.json();
+      console.log("デバッグ情報:", data);
+      alert(
+        `デバッグ情報をコンソールに出力しました。\nモード: ${data.environment.CAMERA_MODE}\nカメラ数: ${data.environment.NEXT_PUBLIC_CAMERA_COUNT}`
+      );
+    } catch (error) {
+      console.error("デバッグ情報の取得に失敗:", error);
+      alert("デバッグ情報の取得に失敗しました");
+    }
   };
 
   return (
@@ -142,12 +171,17 @@ export default function VideoStream({ camIdx, showNum }: Props) {
             /* 2 s 以上止まったら追い越す */
             setTimeout(() => {
               const p = playerRef.current;
-              if (
-                p &&
-                p.buffered.length > 0 &&
-                p.currentTime - p.buffered.end(0) > 1
-              ) {
-                p.currentTime = p.buffered.end(0) - 0.1;
+              try {
+                if (
+                  p &&
+                  p.buffered &&
+                  p.buffered.length > 0 &&
+                  p.currentTime - p.buffered.end(0) > 1
+                ) {
+                  p.currentTime = p.buffered.end(0) - 0.1;
+                }
+              } catch (error) {
+                console.warn(`カメラ ${camIdx} バッファ操作エラー:`, error);
               }
             }, 2000);
           }}
@@ -214,6 +248,17 @@ export default function VideoStream({ camIdx, showNum }: Props) {
           onMouseLeave={(e) => !isLoading && hoverBtn(e, "#007bff")}
         >
           {isLoading ? "⏳" : "🔄"}
+        </button>
+
+        {/* debug */}
+        <button
+          onClick={showDebugInfo}
+          style={btnStyle("#6f42c1", "#6f42c1")}
+          onMouseEnter={(e) => hoverBtn(e, "#5a32a3")}
+          onMouseLeave={(e) => hoverBtn(e, "#6f42c1")}
+          title="デバッグ情報を表示"
+        >
+          🐛
         </button>
 
         {/* fullscreen */}
