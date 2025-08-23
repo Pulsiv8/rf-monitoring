@@ -70,7 +70,38 @@ const maxGlobalCams =
   process.env.CAMERA_RTSP_HOSTS_GLOBAL?.split(",").length || 0;
 const MAX_CAMS = Math.max(maxLocalCams, maxGlobalCams);
 
+// 各カメラのカウンターを個別に管理
 export const counters = new Uint32Array(MAX_CAMS); // bytes ⬆︎
+
+// 各カメラの前回値を個別に管理
+export const prevCounters = new Map<number, number>();
+
+// カウンターの初期化と管理
+export const initializeCounter = (cam: number) => {
+  if (!prevCounters.has(cam)) {
+    prevCounters.set(cam, counters[cam]);
+    // console.log(`カメラ ${cam} カウンター初期化:`, {
+    //   current: counters[cam],
+    //   prev: prevCounters.get(cam),
+    // });
+  }
+};
+
+export const updateCounter = (cam: number, bytes: number) => {
+  const oldValue = counters[cam];
+  counters[cam] += bytes;
+  const newValue = counters[cam];
+
+  // console.log(`カメラ ${cam} カウンター更新:`, {
+  //   oldValue,
+  //   newValue,
+  //   diff: newValue - oldValue,
+  //   bytes,
+  //   timestamp: new Date().toISOString(),
+  // });
+
+  return { oldValue, newValue };
+};
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -91,6 +122,21 @@ export async function GET(req: NextRequest) {
     const sp = new URL(req.url).searchParams;
     const mode = sp.get("mode") || DEFAULT_MODE; // UIからモードを受け取る
     const cam = Math.min(MAX_CAMS - 1, Math.max(0, Number(sp.get("cam") || 0)));
+
+    // ストリーム開始時のログ
+    console.log(`ストリーム開始:`, {
+      cam: cam,
+      mode: mode,
+      maxCams: MAX_CAMS,
+      currentCounters: Array.from(counters).map((val, idx) => ({
+        idx,
+        value: val,
+      })),
+      camCounterBefore: counters[cam],
+    });
+
+    // カウンターの初期化
+    initializeCounter(cam);
 
     // モードに応じてホストとポートを取得
     const { hosts, ports } = getHostsAndPorts(mode);
@@ -187,7 +233,27 @@ export async function GET(req: NextRequest) {
     const body = new ReadableStream({
       start(controller) {
         rstream.on("data", (chunk: Buffer) => {
-          counters[cam] += chunk.length;
+          const { oldValue, newValue } = updateCounter(cam, chunk.length);
+
+          // console.log(`カメラ ${cam} ストリームデータ:`, {
+          //   chunkSize: chunk.length,
+          //   oldCounter: oldValue,
+          //   newCounter: newValue,
+          //   diff: newValue - oldValue,
+          //   timestamp: new Date().toISOString(),
+          // });
+
+          // 全カメラのカウンター状態をログ出力
+          // console.log(`カメラ ${cam} 更新後の全カウンター状態:`, {
+          //   cam: cam,
+          //   allCounters: Array.from(counters).map((val, idx) => ({
+          //     idx,
+          //     value: val,
+          //   })),
+          //   updatedIndex: cam,
+          //   updatedValue: newValue,
+          // });
+
           controller.enqueue(chunk);
         });
         rstream.on("end", () => controller.close());

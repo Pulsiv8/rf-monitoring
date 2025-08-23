@@ -2,7 +2,12 @@
 import { useEffect, useRef, useState } from "react";
 import mpegts from "mpegts.js";
 
-type Props = { camIdx: number; showNum: number; mode: string };
+type Props = {
+  camIdx: number;
+  showNum: number;
+  mode: string;
+  cameraName: string;
+};
 
 const RES_MAP = {
   VGA: { label: "640×480", size: "640x480" },
@@ -11,7 +16,12 @@ const RES_MAP = {
   "4K": { label: "3840×2160", size: "3840x2160" },
 } as const;
 
-export default function VideoStream({ camIdx, showNum, mode }: Props) {
+export default function VideoStream({
+  camIdx,
+  showNum,
+  mode,
+  cameraName,
+}: Props) {
   /* UI state */
   const [resKey, setResKey] = useState<keyof typeof RES_MAP>("HD");
   const [fps, setFps] = useState(5);
@@ -19,6 +29,23 @@ export default function VideoStream({ camIdx, showNum, mode }: Props) {
   const [isLoading, setIsLoading] = useState(false);
   const [kbps, setKbps] = useState<number | null>(null);
   const [lastError, setLastError] = useState<string | null>(null);
+  const [lastMetricsUpdate, setLastMetricsUpdate] = useState<Date | null>(null);
+  const [metricsConnectionStatus, setMetricsConnectionStatus] = useState<
+    "connecting" | "connected" | "error" | "disconnected"
+  >("disconnected");
+
+  // kbpsの安全な取得関数
+  const getSafeKbps = (): number | null => {
+    if (
+      kbps !== null &&
+      kbps !== undefined &&
+      typeof kbps === "number" &&
+      !isNaN(kbps)
+    ) {
+      return kbps;
+    }
+    return null;
+  };
 
   /* refs */
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -26,6 +53,13 @@ export default function VideoStream({ camIdx, showNum, mode }: Props) {
 
   /* build stream URL */
   const url = `/api/stream?cam=${camIdx}&res=${RES_MAP[resKey].size}&fps=${fps}&mode=${mode}&cb=${reloadKey}`;
+
+  // デバッグ用: カメラ情報をログ出力
+  useEffect(() => {
+    console.log(
+      `VideoStream初期化: camIdx=${camIdx}, cameraName="${cameraName}", mode=${mode}, url=${url}`
+    );
+  }, [camIdx, cameraName, mode, url]);
 
   /* initialise mpegts.js */
   useEffect(() => {
@@ -86,24 +120,124 @@ export default function VideoStream({ camIdx, showNum, mode }: Props) {
 
   /* SSE metrics */
   useEffect(() => {
-    const es = new EventSource(`/api/metrics?cam=${camIdx}`);
-    es.onmessage = (e) => {
+    let es: EventSource | null = null;
+    let retryCount = 0;
+    const maxRetries = 3;
+    const retryDelay = 2000;
+
+    const connectMetrics = () => {
       try {
-        const data = JSON.parse(e.data);
-        if (data.error) {
-          console.error(`カメラ ${camIdx} メトリクスエラー:`, data.error);
-        } else {
-          setKbps(data.kbps);
+        // 既存の接続を閉じる
+        if (es) {
+          es.close();
         }
+
+        setMetricsConnectionStatus("connecting");
+        const metricsUrl = `/api/metrics?cam=${camIdx}&mode=${mode}&cb=${Date.now()}`;
+        // console.log(`カメラ ${camIdx} メトリクス接続開始:`, metricsUrl);
+
+        es = new EventSource(metricsUrl);
+
+        es.onopen = () => {
+          // console.log(`カメラ ${camIdx} メトリクス接続成功`);
+          retryCount = 0; // 接続成功時はリトライカウントをリセット
+          setLastError(null);
+          setMetricsConnectionStatus("connected");
+        };
+
+        es.onmessage = (e) => {
+          try {
+            const data = JSON.parse(e.data);
+            // console.log(`カメラ ${camIdx} メトリクス受信:`, {
+            //   receivedData: data,
+            //   currentCamIdx: camIdx,
+            //   dataCamIdx: data.cam,
+            //   isMatch: data.cam === camIdx,
+            //   kbps: data.kbps,
+            //   timestamp: data.timestamp,
+            // });
+
+            if (data.error) {
+              console.error(`カメラ ${camIdx} メトリクスエラー:`, data.error);
+              setLastError(`メトリクスエラー: ${data.error}`);
+              setMetricsConnectionStatus("error");
+            } else if (data.cam === camIdx) {
+              // カメラIDが一致する場合のみ更新
+              if (
+                data.kbps !== undefined &&
+                data.kbps !== null &&
+                typeof data.kbps === "number" &&
+                !isNaN(data.kbps)
+              ) {
+                // console.log(`カメラ ${camIdx} メトリクス更新成功:`, {
+                //   oldKbps: kbps,
+                //   newKbps: data.kbps,
+                //   diff: data.kbps - (kbps || 0),
+                //   debug: data.debug,
+                // });
+
+                setKbps(data.kbps);
+                setLastMetricsUpdate(new Date()); // メトリクス更新時刻を更新
+                setLastError(null);
+                setMetricsConnectionStatus("connected");
+              } else {
+                console.warn(`カメラ ${camIdx} 無効なkbps値:`, data.kbps);
+                setLastError(`無効なメトリクス値: ${data.kbps}`);
+                setMetricsConnectionStatus("error");
+              }
+            } else {
+              console.warn(
+                `カメラ ${camIdx} メトリクスID不一致:`,
+                data.cam,
+                "!=",
+                camIdx
+              );
+            }
+          } catch (error) {
+            console.error(`カメラ ${camIdx} メトリクス解析エラー:`, error);
+            setLastError(`メトリクス解析エラー`);
+            setMetricsConnectionStatus("error");
+          }
+        };
+
+        es.onerror = (error) => {
+          console.error(`カメラ ${camIdx} メトリクス接続エラー:`, error);
+          setLastError(`メトリクス接続エラー`);
+          setMetricsConnectionStatus("error");
+
+          // 接続エラー時のリトライ処理
+          if (retryCount < maxRetries) {
+            retryCount++;
+            // console.log(
+            //   `カメラ ${camIdx} メトリクス再接続試行 ${retryCount}/${maxRetries}`
+            // );
+            setTimeout(connectMetrics, retryDelay);
+          } else {
+            console.error(
+              `カメラ ${camIdx} メトリクス接続失敗: 最大リトライ回数に達しました`
+            );
+            setLastError(`メトリクス接続失敗 (リトライ上限)`);
+            setMetricsConnectionStatus("error");
+          }
+        };
       } catch (error) {
-        console.error(`カメラ ${camIdx} メトリクス解析エラー:`, error);
+        console.error(`カメラ ${camIdx} メトリクス接続作成エラー:`, error);
+        setLastError(`メトリクス接続作成エラー`);
+        setMetricsConnectionStatus("error");
       }
     };
-    es.onerror = (error) => {
-      console.error(`カメラ ${camIdx} メトリクス接続エラー:`, error);
+
+    // 初回接続
+    connectMetrics();
+
+    // クリーンアップ
+    return () => {
+      if (es) {
+        // console.log(`カメラ ${camIdx} メトリクス接続終了`);
+        es.close();
+      }
     };
-    return () => es.close();
-  }, [camIdx]);
+  }, [camIdx, mode]);
 
   /* force reload handler */
   const forceReload = () => {
@@ -113,19 +247,19 @@ export default function VideoStream({ camIdx, showNum, mode }: Props) {
   };
 
   /* debug handler */
-  const showDebugInfo = async () => {
-    try {
-      const response = await fetch("/api/debug");
-      const data = await response.json();
-      console.log("デバッグ情報:", data);
-      alert(
-        `デバッグ情報をコンソールに出力しました。\nモード: ${data.environment.CAMERA_MODE}\nカメラ数: ${data.environment.NEXT_PUBLIC_CAMERA_COUNT}`
-      );
-    } catch (error) {
-      console.error("デバッグ情報の取得に失敗:", error);
-      alert("デバッグ情報の取得に失敗しました");
-    }
-  };
+  // const showDebugInfo = async () => {
+  //   try {
+  //     const response = await fetch("/api/debug");
+  //     const data = await response.json();
+  //     console.log("デバッグ情報:", data);
+  //     alert(
+  //       `デバッグ情報をコンソールに出力しました。\nモード: ${data.environment.CAMERA_MODE}\nカメラ数: ${data.environment.NEXT_PUBLIC_CAMERA_COUNT}`
+  //     );
+  //   } catch (error) {
+  //     console.error("デバッグ情報の取得に失敗:", error);
+  //     alert("デバッグ情報の取得に失敗しました");
+  //   }
+  // };
 
   return (
     <div
@@ -138,9 +272,11 @@ export default function VideoStream({ camIdx, showNum, mode }: Props) {
         borderRadius: "12px",
         border: "1px solid #e9ecef",
         boxShadow: "0 2px 8px rgba(0,0,0,0.1)",
-        width: showNum === 1 ? "80%" : "100%",
+        width: "100%",
         minWidth: "300px",
-        ...(showNum === 1 && { maxWidth: "1200px", margin: "0 auto" }),
+        maxWidth: "100%",
+        height: "fit-content",
+        boxSizing: "border-box",
       }}
     >
       {/* video box */}
@@ -155,6 +291,59 @@ export default function VideoStream({ camIdx, showNum, mode }: Props) {
           boxShadow: "0 4px 12px rgba(0,0,0,0.15)",
         }}
       >
+        {/* カメラ名称オーバーレイ */}
+        <div
+          style={{
+            position: "absolute",
+            top: "12px",
+            left: "12px",
+            background: "rgba(0, 0, 0, 0.7)",
+            color: "white",
+            padding: "6px 12px",
+            borderRadius: "6px",
+            fontSize: "14px",
+            fontWeight: "600",
+            zIndex: 10,
+            backdropFilter: "blur(4px)",
+            border: "1px solid rgba(255, 255, 255, 0.2)",
+          }}
+        >
+          {cameraName}
+        </div>
+
+        {/* メトリクス接続状態インジケーター */}
+        <div
+          style={{
+            position: "absolute",
+            top: "12px",
+            right: "12px",
+            background:
+              metricsConnectionStatus === "connected" && getSafeKbps() !== null
+                ? "rgba(40, 167, 69, 0.8)"
+                : metricsConnectionStatus === "connecting"
+                ? "rgba(0, 123, 255, 0.8)"
+                : metricsConnectionStatus === "error"
+                ? "rgba(220, 53, 69, 0.8)"
+                : "rgba(108, 117, 125, 0.8)",
+            color: "white",
+            padding: "4px 8px",
+            borderRadius: "4px",
+            fontSize: "12px",
+            fontWeight: "500",
+            zIndex: 10,
+            backdropFilter: "blur(4px)",
+            border: "1px solid rgba(255, 255, 255, 0.2)",
+          }}
+        >
+          {metricsConnectionStatus === "connected" && getSafeKbps() !== null
+            ? "● 接続中"
+            : metricsConnectionStatus === "connecting"
+            ? "○ 接続中"
+            : metricsConnectionStatus === "error"
+            ? "× 接続エラー"
+            : "○ 接続待機"}
+        </div>
+
         <video
           ref={videoRef}
           muted
@@ -252,7 +441,7 @@ export default function VideoStream({ camIdx, showNum, mode }: Props) {
         </button>
 
         {/* debug */}
-        <button
+        {/* <button
           onClick={showDebugInfo}
           style={btnStyle("#6f42c1", "#6f42c1")}
           onMouseEnter={(e) => hoverBtn(e, "#5a32a3")}
@@ -260,7 +449,7 @@ export default function VideoStream({ camIdx, showNum, mode }: Props) {
           title="デバッグ情報を表示"
         >
           🐛
-        </button>
+        </button> */}
 
         {/* fullscreen */}
         <button
@@ -276,19 +465,97 @@ export default function VideoStream({ camIdx, showNum, mode }: Props) {
       {/* info */}
       <div
         style={{
-          fontSize: "24px",
+          fontSize: "16px",
           color: "#495057",
           padding: "12px 16px",
           background: "#fff",
           borderRadius: "8px",
           border: "1px solid #e9ecef",
-          fontWeight: 500,
+          fontWeight: "500",
         }}
       >
-        {kbps !== null ? `実測: ${kbps.toFixed(1)} kbps` : "―"}{" "}
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            marginBottom: "8px",
+          }}
+        >
+          <span>カメラ {camIdx + 1}</span>
+          <span style={{ fontSize: "14px", color: "#6c757d" }}>
+            {RES_MAP[resKey].label} / {fps}fps
+          </span>
+        </div>
+
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+          }}
+        >
+          <span>
+            {metricsConnectionStatus === "connected" &&
+            getSafeKbps() !== null ? (
+              <span style={{ color: "#28a745", fontWeight: "600" }}>
+                実測: {getSafeKbps()!.toFixed(1)} kbps
+              </span>
+            ) : metricsConnectionStatus === "connecting" ? (
+              <span style={{ color: "#007bff", fontStyle: "italic" }}>
+                メトリクス接続中...
+              </span>
+            ) : metricsConnectionStatus === "error" ? (
+              <span style={{ color: "#dc3545", fontStyle: "italic" }}>
+                メトリクス接続エラー
+              </span>
+            ) : (
+              <span style={{ color: "#6c757d", fontStyle: "italic" }}>
+                メトリクス未接続
+              </span>
+            )}
+          </span>
+
+          {lastMetricsUpdate && (
+            <span style={{ fontSize: "12px", color: "#6c757d" }}>
+              更新: {lastMetricsUpdate.toLocaleTimeString()}
+            </span>
+          )}
+        </div>
+
+        {/* デバッグ情報表示（開発時のみ） */}
+        {process.env.NODE_ENV === "development" && kbps !== null && (
+          <div
+            style={{
+              fontSize: "10px",
+              color: "#6c757d",
+              marginTop: "4px",
+              padding: "4px 8px",
+              background: "#f8f9fa",
+              borderRadius: "4px",
+              border: "1px solid #e9ecef",
+            }}
+          >
+            <div>カメラID: {camIdx}</div>
+            <div>モード: {mode}</div>
+            <div>接続状態: {metricsConnectionStatus}</div>
+            <div>kbps: {kbps}</div>
+          </div>
+        )}
+
         {lastError && (
-          <div style={{ fontSize: "14px", color: "#dc3545", marginTop: "4px" }}>
-            エラー: {lastError}
+          <div
+            style={{
+              fontSize: "12px",
+              color: "#dc3545",
+              marginTop: "8px",
+              padding: "4px 8px",
+              background: "#f8d7da",
+              borderRadius: "4px",
+              border: "1px solid #f5c6cb",
+            }}
+          >
+            ⚠️ {lastError}
           </div>
         )}
       </div>

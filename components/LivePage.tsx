@@ -7,7 +7,6 @@ const VideoStream = dynamic(() => import("@/components/VideoStream"), {
 });
 
 export default function LivePage() {
-  const [showNum, setShowNum] = useState(1);
   const [mode, setMode] = useState<string>("GLOBAL");
   const [availableModes, setAvailableModes] = useState<string[]>([
     "LOCAL",
@@ -36,22 +35,103 @@ export default function LivePage() {
       ? Number(process.env.NEXT_PUBLIC_CAMERA_COUNT_LOCAL || 1)
       : Number(process.env.NEXT_PUBLIC_CAMERA_COUNT_GLOBAL || 1);
 
+  // カメラ名称を取得
+  const getCameraNames = () => {
+    if (mode === "LOCAL") {
+      const names = process.env.NEXT_PUBLIC_CAMERA_NAMES_LOCAL;
+      if (names) {
+        const nameArray = names.split(",").map((name) => name.trim());
+        // 配列の長さがカメラ数と一致するかチェック
+        if (nameArray.length !== TOTAL) {
+          console.warn(
+            `LOCALモード: カメラ名称数(${nameArray.length}) とカメラ数(${TOTAL}) が一致しません`
+          );
+        }
+        return nameArray;
+      }
+    } else {
+      const names = process.env.NEXT_PUBLIC_CAMERA_NAMES_GLOBAL;
+      if (names) {
+        const nameArray = names.split(",").map((name) => name.trim());
+        // 配列の長さがカメラ数と一致するかチェック
+        if (nameArray.length !== TOTAL) {
+          console.warn(
+            `GLOBALモード: カメラ名称数(${nameArray.length}) とカメラ数(${TOTAL}) が一致しません`
+          );
+        }
+        return nameArray;
+      }
+    }
+    // デフォルトの名称
+    return Array.from({ length: TOTAL }, (_, i) => `Camera ${i + 1}`);
+  };
+
+  const cameraNames = getCameraNames();
+
+  // デバッグ用: カメラ名称とインデックスの対応をログ出力
+  useEffect(() => {
+    console.log(`${mode}モード - カメラ設定:`, {
+      total: TOTAL,
+      names: cameraNames,
+      namesLength: cameraNames.length,
+    });
+  }, [mode, TOTAL, cameraNames]);
+
   // モード変更ハンドラー
   const handleModeChange = (newMode: string) => {
     setMode(newMode);
-    // モード変更時にカメラを再読み込み
-    setShowNum(showNum); // 強制的に再レンダリング
   };
 
-  /* 動的グリッド列数 */
-  const cols =
-    showNum === 1
-      ? 1
-      : showNum === 2
-      ? 2
-      : showNum <= 4
-      ? 2
-      : Math.ceil(Math.sqrt(showNum));
+  /* 動的グリッド列数の自動調整 */
+  const getGridLayout = (cameraCount: number) => {
+    // 画面サイズを考慮したレスポンシブ対応
+    const isMobile = typeof window !== "undefined" && window.innerWidth < 768;
+    const isTablet = typeof window !== "undefined" && window.innerWidth < 1024;
+
+    if (isMobile) {
+      // モバイルの場合は縦並び
+      return { cols: 1, rows: cameraCount };
+    }
+
+    if (isTablet) {
+      // タブレットの場合は最大2列
+      if (cameraCount <= 2) return { cols: cameraCount, rows: 1 };
+      if (cameraCount <= 4)
+        return { cols: 2, rows: Math.ceil(cameraCount / 2) };
+      return { cols: 2, rows: Math.ceil(cameraCount / 2) };
+    }
+
+    // デスクトップの場合
+    if (cameraCount === 1) return { cols: 1, rows: 1 };
+    if (cameraCount === 2) return { cols: 2, rows: 1 };
+    if (cameraCount === 3) return { cols: 3, rows: 1 };
+    if (cameraCount === 4) return { cols: 2, rows: 2 };
+    if (cameraCount === 5 || cameraCount === 6) return { cols: 3, rows: 2 };
+    if (cameraCount === 7 || cameraCount === 8) return { cols: 4, rows: 2 };
+    if (cameraCount === 9) return { cols: 3, rows: 3 };
+    if (cameraCount === 10 || cameraCount === 12) return { cols: 4, rows: 3 };
+    if (cameraCount === 11) return { cols: 4, rows: 3 };
+    if (cameraCount === 13 || cameraCount === 14) return { cols: 4, rows: 4 };
+    if (cameraCount === 15 || cameraCount === 16) return { cols: 4, rows: 4 };
+
+    // それ以上の場合は、アスペクト比を考慮して調整
+    if (typeof window !== "undefined") {
+      const aspectRatio = window.innerWidth / window.innerHeight;
+      if (aspectRatio > 1.5) {
+        // 横長の画面の場合、列数を多くする
+        const cols = Math.ceil(Math.sqrt(cameraCount * aspectRatio));
+        const rows = Math.ceil(cameraCount / cols);
+        return { cols, rows };
+      }
+    }
+
+    // デフォルトの計算
+    const cols = Math.ceil(Math.sqrt(cameraCount));
+    const rows = Math.ceil(cameraCount / cols);
+    return { cols, rows };
+  };
+
+  const { cols, rows } = getGridLayout(TOTAL);
 
   return (
     <div
@@ -83,26 +163,19 @@ export default function LivePage() {
         >
           <div style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
             <h1 style={{ fontSize: "2rem" }}>Farm Monitoring System</h1>
-            <select
-              value={showNum}
-              onChange={(e) => setShowNum(Number(e.target.value))}
+            <span
               style={{
-                fontSize: "1.4rem",
-                padding: "0.2rem 0.4rem",
+                fontSize: "1.2rem",
+                padding: "0.3rem 0.8rem",
+                background: "#6c757d",
+                color: "white",
+                borderRadius: "20px",
+                fontWeight: "500",
                 marginLeft: "0.4rem",
-                background: "white",
-                borderRadius: "0.4rem",
-                border: "none",
-                boxShadow: "0 2px 4px rgba(0,0,0,0.1)",
-                cursor: "pointer",
               }}
             >
-              {Array.from({ length: TOTAL }, (_, i) => i + 1).map((n) => (
-                <option key={n} value={n}>
-                  {n} 画面
-                </option>
-              ))}
-            </select>
+              {TOTAL} カメラ
+            </span>
           </div>
           {/* モード選択 */}
           <select
@@ -139,14 +212,20 @@ export default function LivePage() {
           display: "grid",
           gap: "1rem",
           gridTemplateColumns: `repeat(${cols}, 1fr)`,
+          gridTemplateRows: `repeat(${rows}, minmax(auto, 1fr))`,
+          maxWidth: "100%",
+          margin: "0 auto",
+          alignItems: "start",
+          justifyItems: "center",
         }}
       >
-        {Array.from({ length: showNum }, (_, idx) => (
+        {Array.from({ length: TOTAL }, (_, idx) => (
           <VideoStream
             key={`${mode}-${idx}`}
-            camIdx={idx % TOTAL}
-            showNum={showNum}
+            camIdx={idx}
+            showNum={TOTAL}
             mode={mode}
+            cameraName={cameraNames[idx]}
           />
         ))}
       </div>
