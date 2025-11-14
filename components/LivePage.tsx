@@ -211,11 +211,12 @@ export default function LivePage() {
         style={{
           display: "grid",
           gap: "1rem",
-          gridTemplateColumns: `repeat(${cols}, 1fr)`,
-          gridTemplateRows: `repeat(${rows}, minmax(auto, 1fr))`,
-          maxWidth: "100%",
+          gridTemplateColumns: TOTAL === 1 ? "1fr" : `repeat(${cols}, 1fr)`,
+          gridTemplateRows:
+            TOTAL === 1 ? "1fr" : `repeat(${rows}, minmax(auto, 1fr))`,
+          maxWidth: TOTAL === 1 ? "800px" : "100%",
           margin: "0 auto",
-          alignItems: "start",
+          alignItems: TOTAL === 1 ? "center" : "start",
           justifyItems: "center",
         }}
       >
